@@ -64,24 +64,24 @@ def db2_keep_alive(request):
         conn = ibm_db_dbi.connect(conn_str)
         cursor = conn.cursor()
 
-        # New Cleanup Logic: Keep top 30 OR records from the last 30 minutes
+        # New Cleanup Logic: Keep top 262144 OR records from the last 6 months
         cleanup_sql = """
         DELETE FROM ZZG36949.CHRONOS_RECORDS
         WHERE ID NOT IN (
             SELECT ID FROM ( -- Sub-select to handle UNION for NOT IN
                 SELECT ID FROM ZZG36949.CHRONOS_RECORDS
                 ORDER BY RECORD_TIME DESC
-                FETCH FIRST 30 ROWS ONLY -- Changed to 30
+                FETCH FIRST 262144 ROWS ONLY -- Changed to 262144
             )
             UNION
             SELECT ID FROM ZZG36949.CHRONOS_RECORDS
-            WHERE RECORD_TIME >= (CURRENT TIMESTAMP - 30 MINUTES) -- Changed to 30 MINUTES
+            WHERE RECORD_TIME >= (CURRENT TIMESTAMP - 6 MONTHS) -- Changed to 6 MONTHS
         )
         """
         cursor.execute(cleanup_sql)
         record_count_val = cursor.rowcount if cursor.rowcount != -1 else 0 
         conn.commit() 
-        note_val = f"Keep-alive successful, new cleanup (top 30 or last 30min) applied, {record_count_val} old records cleaned."
+        note_val = f"Keep-alive successful, new cleanup (top 262144 or last 6 months) applied, {record_count_val} old records cleaned."
 
     except Exception as e:
         status_val = "FAIL"
@@ -103,7 +103,7 @@ def db2_keep_alive(request):
         if request_note and status_val == "OK": 
             note_val = request_note
         elif not note_val and status_val == "OK": 
-             note_val = "Log entry with new cleanup strategy (top 30 or last 30min)."
+             note_val = "Log entry with new cleanup strategy (top 262144 or last 6 months)." # Updated note
         elif not note_val: 
              note_val = "Log entry."
 
