@@ -1,0 +1,3 @@
+# DB2 Keep-Alive Cloud Function
+
+A Python Google Cloud Function that periodically logs a keep-alive record to an IBM Db2 database and manages log retention.
