@@ -3,17 +3,19 @@ import ibm_db
 from datetime import datetime
 import functions_framework
 from flask import jsonify
+import time # 用于计算耗时
+import uuid # 用于生成唯一请求ID
+import socket # 用于获取主机名
 
-# --- 数据库配置 ---
+# --- 数据库配置 (与之前一致) ---
 DB_DATABASE = "bludb"
 DB_HOSTNAME = "6667d8e9-9d4d-4ccb-ba32-21da3bb5aafc.c1ogj3sd0tgtu0lqde00.databases.appdomain.cloud"
 DB_PORT = "30376"
 DB_PROTOCOL = "TCPIP"
 DB_UID = "zzg36949"
-DB_PWD = os.getenv("DB2_PASSWORD")
+DB_PWD = os.getenv("DB2_PASSWORD") # 从环境变量获取
 DB_SECURITY = "SSL"
 
-# 构建连接字符串
 conn_str = (
     f"DATABASE={DB_DATABASE};"
     f"HOSTNAME={DB_HOSTNAME};"
@@ -27,26 +29,40 @@ conn_str = (
 @functions_framework.http
 def db2_keep_alive(request):
     """
-    一个由HTTP请求触发的GCP云函数。
-    它会连接到DB2数据库，先插入一条保活记录，再清理旧记录，确保总数不超过100。
+    GCP云函数: 记录详细的保活信息，并清理旧记录。
     """
+    start_time = time.perf_counter() # 开始计时
+    
+    # 1. 初始化所有待记录的字段
+    record_time_val = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
+    status_val = "OK" # 默认为OK，如果后续操作失败则修改
+    duration_ms_val = 0
+    error_message_val = None
+    record_count_val = 0 # 清理操作影响的行数
+
+    # 2. 收集系统环境信息
+    hostname_val = socket.gethostname()
+    # 从环境变量读取，如果不存在则使用默认值
+    ip_address_val = request.headers.get('X-Forwarded-For', request.remote_addr) # 优先用 X-Forwarded-For
+    region_val = os.getenv("GCP_REGION", "unknown")
+    env_mode_val = os.getenv("ENV_MODE", "production") # 默认为 production
+    git_commit_val = os.getenv("GIT_COMMIT_SHA", "unknown")
+
+    # 3. 收集请求上下文信息
+    request_method_val = request.method
+    request_path_val = request.path[:999] # 限制长度以匹配VARCHAR(1000)
+    accept_language_val = request.headers.get('Accept-Language', '')[:254]
+    user_agent_val = request.headers.get('User-Agent', '')[:499]
+    request_id_val = str(uuid.uuid4())
+    trigger_source_val = request.args.get('trigger_source', 'HTTP_DIRECT')[:31]
+    note_val = request.args.get('note', '')[:999]
+
+    conn = None
     try:
-        # 建立数据库连接
+        # 4. 建立数据库连接
         conn = ibm_db.connect(conn_str, "", "")
-    except Exception as e:
-        print(f"数据库连接失败: {e}")
-        return jsonify({"error": "Database connection failed", "details": str(e)}), 500
 
-    try:
-        # 第一步：先插入新的保活记录
-        now_utc = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
-        insert_sql = "INSERT INTO ZZG36949.CHRONOS_RECORDS (RECORD_TIME, STATUS) VALUES (?, ?)"
-        stmt_insert = ibm_db.prepare(conn, insert_sql)
-        ibm_db.bind_param(stmt_insert, 1, now_utc)
-        ibm_db.bind_param(stmt_insert, 2, "OK")
-        ibm_db.execute(stmt_insert)
-
-        # 第二步：再执行清理，确保只保留最新的100条
+        # 5. 执行记录清理操作
         cleanup_sql = """
         DELETE FROM ZZG36949.CHRONOS_RECORDS
         WHERE RECORD_TIME < (
@@ -56,19 +72,71 @@ def db2_keep_alive(request):
                 FROM ZZG36949.CHRONOS_RECORDS
                 ORDER BY RECORD_TIME DESC
                 FETCH FIRST 100 ROWS ONLY
-            ) AS T
+            ) AS T_TOP_100
         )
         """
-        stmt_cleanup = ibm_db.exec_immediate(conn, cleanup_sql)
-
-        # 关闭连接
-        ibm_db.close(conn)
-
-        return jsonify({"message": "Keep-alive recorded, total records capped at 100.", "time_utc": now_utc}), 200
+        stmt_cleanup = ibm_db.prepare(conn, cleanup_sql)
+        ibm_db.execute(stmt_cleanup)
+        record_count_val = ibm_db.num_affected_rows(stmt_cleanup)
+        if record_count_val == -1: # num_affected_rows 可能返回 -1 如果信息不可用
+            record_count_val = 0 
 
     except Exception as e:
-        # 如果在执行SQL时出错，也要确保关闭连接
-        if 'conn' in locals() and conn:
-            ibm_db.close(conn)
-        print(f"SQL执行出错: {e}")
-        return jsonify({"error": "An error occurred during DB operation", "details": str(e)}), 500
+        status_val = "FAIL"
+        error_message_val = str(e)[:1999] # 限制错误信息长度
+        print(f"Database operation error: {status_val} - {error_message_val}")
+    
+    finally:
+        # 6. 计算总耗时
+        end_time = time.perf_counter()
+        duration_ms_val = int((end_time - start_time) * 1000)
+
+        # 7. 插入包含所有信息的日志记录 (无论之前是否成功)
+        if conn: # 只有在连接成功的情况下才尝试插入日志
+            try:
+                log_insert_sql = """INSERT INTO ZZG36949.CHRONOS_RECORDS (
+                                    RECORD_TIME, STATUS, DURATION_MS, ERROR_MESSAGE, RECORD_COUNT,
+                                    HOSTNAME, IP_ADDRESS, REGION, ENV_MODE, GIT_COMMIT,
+                                    REQUEST_METHOD, REQUEST_PATH, ACCEPT_LANGUAGE, USER_AGENT,
+                                    REQUEST_ID, TRIGGER_SOURCE, NOTE
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                stmt_log_insert = ibm_db.prepare(conn, log_insert_sql)
+                
+                params_to_bind = [
+                    record_time_val, status_val, duration_ms_val, error_message_val, record_count_val,
+                    hostname_val, ip_address_val, region_val, env_mode_val, git_commit_val,
+                    request_method_val, request_path_val, accept_language_val, user_agent_val,
+                    request_id_val, trigger_source_val, note_val
+                ]
+
+                for i, param_val in enumerate(params_to_bind):
+                    # ibm_db.bind_param 需要参数序号从1开始
+                    ibm_db.bind_param(stmt_log_insert, i + 1, param_val)
+                
+                ibm_db.execute(stmt_log_insert)
+            except Exception as final_insert_e:
+                # 如果最终的日志插入也失败了，打印到云函数日志
+                print(f"CRITICAL: Failed to insert final log record: {final_insert_e}")
+                # 可以在这里决定是否要覆盖 status_val 和 error_message_val
+                # status_val = "LOG_FAIL" 
+                # error_message_val = str(final_insert_e)[:1999]
+            finally:
+                ibm_db.close(conn)
+        else:
+            # 如果连接未建立，status_val 和 error_message_val 可能已经被设定
+            if not error_message_val: # 如果还没有错误信息 (例如连接尝试前就出错了，虽然不太可能)
+                status_val = "FAIL"
+                error_message_val = "DB connection was not established for logging."
+            print(f"Invocation logged to Cloud Logging (DB connection failed or other pre-log error): "
+                  f"Status={status_val}, Error='{error_message_val}', Duration={duration_ms_val}ms, "
+                  f"IP={ip_address_val}, UA='{user_agent_val}', ReqID={request_id_val}")
+
+    # 8. 返回HTTP响应
+    return jsonify({
+        "status": status_val,
+        "requestId": request_id_val,
+        "recordTime": record_time_val,
+        "durationMs": duration_ms_val,
+        "message": error_message_val if error_message_val else "Keep-alive processed.",
+        "cleanedRecords": record_count_val
+    }), 200 if status_val == "OK" else 500
