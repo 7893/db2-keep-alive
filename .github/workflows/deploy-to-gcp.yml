@@ -25,11 +25,19 @@ jobs:
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v1
+        with:
+          version: 'latest'
+        env:
+          CLOUDSDK_CORE_PROJECT: sigma-outcome
+          CLOUDSDK_PROJECT: sigma-outcome
+          GCLOUD_PROJECT: sigma-outcome
+          GOOGLE_CLOUD_PROJECT: sigma-outcome
 
       - name: Deploy to Cloud Functions
         run: |
           gcloud functions deploy db2-keep-alive \
             --gen2 \
+            --project=sigma-outcome \
             --runtime=python39 \
             --region=us-central1 \
             --source=. \
