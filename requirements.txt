@@ -1,4 +1,3 @@
 ibm_db
-python-dotenv
 functions-framework
 flask
