@@ -45,7 +45,7 @@ def db2_keep_alive(request):
     # 从环境变量读取，如果不存在则使用默认值
     ip_address_val = request.headers.get('X-Forwarded-For', request.remote_addr) # 优先用 X-Forwarded-For
     region_val = os.getenv("GCP_REGION", "unknown")
-    env_mode_val = os.getenv("ENV_MODE", "production") # 默认为 production
+    env_mode_val = os.getenv("ENV_MODE", "practice") # 默认为 practice
     git_commit_val = os.getenv("GIT_COMMIT_SHA", "unknown")
 
     # 3. 收集请求上下文信息
@@ -77,13 +77,13 @@ def db2_keep_alive(request):
         """
         stmt_cleanup = ibm_db.prepare(conn, cleanup_sql)
         ibm_db.execute(stmt_cleanup)
-        record_count_val = ibm_db.num_affected_rows(stmt_cleanup)
-        if record_count_val == -1: # num_affected_rows 可能返回 -1 如果信息不可用
+        record_count_val = ibm_db.num_rows(stmt_cleanup) # <-- 这里是修正点
+        if record_count_val == -1: 
             record_count_val = 0 
 
     except Exception as e:
         status_val = "FAIL"
-        error_message_val = str(e)[:1999] # 限制错误信息长度
+        error_message_val = str(e)[:1999] 
         print(f"Database operation error: {status_val} - {error_message_val}")
     
     finally:
@@ -91,8 +91,8 @@ def db2_keep_alive(request):
         end_time = time.perf_counter()
         duration_ms_val = int((end_time - start_time) * 1000)
 
-        # 7. 插入包含所有信息的日志记录 (无论之前是否成功)
-        if conn: # 只有在连接成功的情况下才尝试插入日志
+        # 7. 插入包含所有信息的日志记录
+        if conn: 
             try:
                 log_insert_sql = """INSERT INTO ZZG36949.CHRONOS_RECORDS (
                                     RECORD_TIME, STATUS, DURATION_MS, ERROR_MESSAGE, RECORD_COUNT,
@@ -110,21 +110,18 @@ def db2_keep_alive(request):
                 ]
 
                 for i, param_val in enumerate(params_to_bind):
-                    # ibm_db.bind_param 需要参数序号从1开始
-                    ibm_db.bind_param(stmt_log_insert, i + 1, param_val)
+                    ibm_db.bind_param(stmt_log_insert, i + 1, param_val if param_val is not None else ibm_db.NULL) # 处理None值
                 
                 ibm_db.execute(stmt_log_insert)
             except Exception as final_insert_e:
-                # 如果最终的日志插入也失败了，打印到云函数日志
                 print(f"CRITICAL: Failed to insert final log record: {final_insert_e}")
-                # 可以在这里决定是否要覆盖 status_val 和 error_message_val
-                # status_val = "LOG_FAIL" 
-                # error_message_val = str(final_insert_e)[:1999]
+                if status_val == "OK": # 如果主操作是OK的，但日志插入失败，也应标记
+                    status_val = "LOG_FAIL"
+                    error_message_val = str(final_insert_e)[:1999]
             finally:
                 ibm_db.close(conn)
         else:
-            # 如果连接未建立，status_val 和 error_message_val 可能已经被设定
-            if not error_message_val: # 如果还没有错误信息 (例如连接尝试前就出错了，虽然不太可能)
+            if not error_message_val: 
                 status_val = "FAIL"
                 error_message_val = "DB connection was not established for logging."
             print(f"Invocation logged to Cloud Logging (DB connection failed or other pre-log error): "
@@ -132,11 +129,16 @@ def db2_keep_alive(request):
                   f"IP={ip_address_val}, UA='{user_agent_val}', ReqID={request_id_val}")
 
     # 8. 返回HTTP响应
-    return jsonify({
+    response_payload = {
         "status": status_val,
         "requestId": request_id_val,
         "recordTime": record_time_val,
         "durationMs": duration_ms_val,
-        "message": error_message_val if error_message_val else "Keep-alive processed.",
         "cleanedRecords": record_count_val
-    }), 200 if status_val == "OK" else 500
+    }
+    if error_message_val:
+        response_payload["errorMessage"] = error_message_val
+    else:
+        response_payload["message"] = "Keep-alive processed successfully."
+
+    return jsonify(response_payload), 200 if status_val == "OK" else 500
