@@ -1,4 +1,3 @@
 ibm_db
-ibm_db_dbi
 functions-framework
 flask
