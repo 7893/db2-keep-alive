@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    name: Deploy to Cloud Functions
+    name: Deploy to Cloud Functions Gen2
     runs-on: ubuntu-latest
 
     permissions:
@@ -15,7 +15,7 @@ jobs:
       id-token: 'write'
 
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
@@ -27,7 +27,7 @@ jobs:
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy to Cloud Functions
+      - name: Deploy Cloud Function (Gen2)
         run: |
           gcloud functions deploy db2-keep-alive \
             --project=sigma-outcome \
@@ -35,7 +35,7 @@ jobs:
             --region=us-central1 \
             --runtime=python311 \
             --entry-point=app \
-            --source=. \
             --trigger-http \
             --allow-unauthenticated \
+            --source=. \
             --set-env-vars="DB2_PASSWORD=${{ secrets.DB2_PASSWORD }}"
