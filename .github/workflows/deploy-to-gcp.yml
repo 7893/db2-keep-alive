@@ -31,15 +31,17 @@ jobs:
 
       - name: Build Docker image and submit to GCR
         run: |
-          gcloud builds submit --tag gcr.io/sigma-outcome/db2-keep-alive
+          gcloud builds submit \
+            --tag gcr.io/sigma-outcome/db2-keep-alive \
+            --project=sigma-outcome
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy db2-keep-alive \
             --image gcr.io/sigma-outcome/db2-keep-alive \
-            --region us-central1 \
-            --allow-unauthenticated \
+            --region=us-central1 \
             --project=sigma-outcome \
+            --allow-unauthenticated \
             --port=8080 \
             --memory=512Mi \
             --set-env-vars="DB2_PASSWORD=${{ secrets.DB2_PASSWORD }}"
