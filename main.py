@@ -39,7 +39,7 @@ def db2_keep_alive(request):
     status_val = "OK"
     duration_ms_val = 0
     error_message_val = None
-    record_count_val = 0 # Stores actual number of rows deleted by cleanup
+    record_count_val = 0 
     note_val = ""
 
     # System environment info
@@ -64,31 +64,24 @@ def db2_keep_alive(request):
         conn = ibm_db_dbi.connect(conn_str)
         cursor = conn.cursor()
 
-        # New Cleanup Logic: Keep top 10 OR records from the last hour
-        # This means delete records that are NOT in top 10 AND are OLDER than 1 hour
-        one_hour_ago_ts_for_sql = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d-%H.%M.%S.%f")
-
-        cleanup_sql = f"""
+        # New Cleanup Logic: Keep top 30 OR records from the last 30 minutes
+        cleanup_sql = """
         DELETE FROM ZZG36949.CHRONOS_RECORDS
         WHERE ID NOT IN (
-            SELECT ID FROM ( -- Sub-select to handle UNION for NOT IN (may not be strictly needed for all DB2 versions but safer)
+            SELECT ID FROM ( -- Sub-select to handle UNION for NOT IN
                 SELECT ID FROM ZZG36949.CHRONOS_RECORDS
                 ORDER BY RECORD_TIME DESC
-                FETCH FIRST 10 ROWS ONLY
+                FETCH FIRST 30 ROWS ONLY -- Changed to 30
             )
             UNION
             SELECT ID FROM ZZG36949.CHRONOS_RECORDS
-            WHERE RECORD_TIME >= '{one_hour_ago_ts_for_sql}' -- Using the calculated timestamp string
+            WHERE RECORD_TIME >= (CURRENT TIMESTAMP - 30 MINUTES) -- Changed to 30 MINUTES
         )
         """
-        # Note: Using f-string for one_hour_ago_ts_for_sql is generally okay if the value is controlled
-        # and properly formatted. For user-supplied input, always use parameterized queries.
-        # Here, it's a system-generated timestamp string.
-
         cursor.execute(cleanup_sql)
         record_count_val = cursor.rowcount if cursor.rowcount != -1 else 0 
         conn.commit() 
-        note_val = f"Keep-alive successful, new cleanup (top 10 or last 1hr) applied, {record_count_val} old records cleaned."
+        note_val = f"Keep-alive successful, new cleanup (top 30 or last 30min) applied, {record_count_val} old records cleaned."
 
     except Exception as e:
         status_val = "FAIL"
@@ -110,7 +103,7 @@ def db2_keep_alive(request):
         if request_note and status_val == "OK": 
             note_val = request_note
         elif not note_val and status_val == "OK": 
-             note_val = "Log entry with new cleanup strategy (top 10 or last 1hr)."
+             note_val = "Log entry with new cleanup strategy (top 30 or last 30min)."
         elif not note_val: 
              note_val = "Log entry."
 
