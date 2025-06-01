@@ -1,21 +1,22 @@
-from flask import Flask
+from flask import Flask, jsonify
 import ibm_db
-import os
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
-import pytz
+import os
 
 load_dotenv()
 
 app = Flask(__name__)
 
-# DB config from .env
+# 东八区（UTC+8）
+tz = timezone(timedelta(hours=8))
+
 DB_DATABASE = "bludb"
 DB_HOSTNAME = "6667d8e9-9d4d-4ccb-ba32-21da3bb5aafc.c1ogj3sd0tgtu0lqde00.databases.appdomain.cloud"
 DB_PORT = "30376"
 DB_PROTOCOL = "TCPIP"
 DB_UID = "zzg36949"
-DB_PWD = os.environ.get("DB_PWD")
+DB_PWD = os.getenv("DB2_PASSWORD")
 DB_SECURITY = "SSL"
 
 conn_str = (
@@ -28,89 +29,78 @@ conn_str = (
     f"SECURITY={DB_SECURITY};"
 )
 
-def get_db_connection():
-    return ibm_db.connect(conn_str, "", "")
-
-def clean_old_records(conn):
+@app.route("/")
+def index():
     try:
-        stmt = ibm_db.exec_immediate(conn, "SELECT ID, RECORD_TIME FROM KEEP_ALIVE ORDER BY ID DESC")
-        ids_to_keep = []
-        now = datetime.utcnow()
+        conn = ibm_db.connect(conn_str, "", "")
+        sql = "SELECT ID, RECORD_TIME, STATUS FROM DB2_KEEPALIVE ORDER BY ID DESC"
+        stmt = ibm_db.exec_immediate(conn, sql)
 
-        count = 0
-        while ibm_db.fetch_row(stmt):
-            record_time_str = ibm_db.result(stmt, "RECORD_TIME")
-            record_id = ibm_db.result(stmt, "ID")
-            record_time = datetime.strptime(record_time_str, "%Y-%m-%d-%H.%M.%S.%f")
-
-            if count < 100 or (now - record_time).days < 7:
-                ids_to_keep.append(str(record_id))
-                count += 1
-            else:
+        rows = []
+        while True:
+            row = ibm_db.fetch_assoc(stmt)
+            if not row:
                 break
+            rows.append(row)
 
-        if ids_to_keep:
-            id_list = ",".join(ids_to_keep)
-            delete_sql = f"DELETE FROM KEEP_ALIVE WHERE ID NOT IN ({id_list})"
-            ibm_db.exec_immediate(conn, delete_sql)
+        total = len(rows)
+        latest = rows[0]['RECORD_TIME'] if total else None
+        earliest = rows[-1]['RECORD_TIME'] if total else None
+
+        # 构建 HTML 页面
+        html = "<html><head><title>DB2 Keep Alive</title></head><body style='font-family:sans-serif'>"
+        html += "<h2>DB2 Keep Alive Status</h2>"
+
+        if total > 0:
+            latest_dt = datetime.strptime(latest, "%Y-%m-%d-%H.%M.%S.%f").astimezone(tz)
+            earliest_dt = datetime.strptime(earliest, "%Y-%m-%d-%H.%M.%S.%f").astimezone(tz)
+            html += f"<p><strong>Total Records:</strong> {total}</p>"
+            html += f"<p><strong>Latest Record Time:</strong> {latest_dt.strftime('%Y-%m-%d %H:%M:%S')}</p>"
+            html += f"<p><strong>Earliest Record Time:</strong> {earliest_dt.strftime('%Y-%m-%d %H:%M:%S')}</p>"
+        else:
+            html += "<p>No data available.</p>"
+
+        html += "</body></html>"
+        return html
+
     except Exception as e:
-        print("Cleanup error:", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'conn' in locals():
+            ibm_db.close(conn)
 
 @app.route("/ping")
 def ping():
     try:
-        conn = get_db_connection()
-        clean_old_records(conn)
+        conn = ibm_db.connect(conn_str, "", "")
 
-        now = datetime.utcnow()
-        now_str = now.strftime("%Y-%m-%d-%H.%M.%S.%f")
-        insert_sql = f"INSERT INTO KEEP_ALIVE (RECORD_TIME, STATUS) VALUES ('{now_str}', 'OK')"
-        ibm_db.exec_immediate(conn, insert_sql)
-        ibm_db.close(conn)
-        return "Ping OK"
-    except Exception as e:
-        return f"Error: {str(e)}", 500
-
-@app.route("/")
-def index():
-    try:
-        conn = get_db_connection()
-        cur = ibm_db.exec_immediate(conn, "SELECT COUNT(*) AS TOTAL FROM KEEP_ALIVE")
-        total = ibm_db.fetch_assoc(cur)["TOTAL"]
-
-        latest_sql = "SELECT RECORD_TIME FROM KEEP_ALIVE ORDER BY ID DESC FETCH FIRST 1 ROWS ONLY"
-        earliest_sql = "SELECT RECORD_TIME FROM KEEP_ALIVE ORDER BY ID ASC FETCH FIRST 1 ROWS ONLY"
-
-        latest_time = "N/A"
-        earliest_time = "N/A"
-
-        stmt = ibm_db.exec_immediate(conn, latest_sql)
-        if ibm_db.fetch_row(stmt):
-            latest_time = ibm_db.result(stmt, 0)
-
-        stmt = ibm_db.exec_immediate(conn, earliest_sql)
-        if ibm_db.fetch_row(stmt):
-            earliest_time = ibm_db.result(stmt, 0)
-
-        ibm_db.close(conn)
-
-        def format_time(dt_str):
-            if dt_str == "N/A":
-                return "N/A"
-            utc = datetime.strptime(dt_str, "%Y-%m-%d-%H.%M.%S.%f")
-            local = utc.replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Shanghai'))
-            return local.strftime("%Y-%m-%d %H:%M:%S")
-
-        return f"""
-        <html>
-        <head><title>DB2 Keep Alive</title></head>
-        <body style="font-family: sans-serif; padding: 20px;">
-          <h1>DB2 Keep Alive Status</h1>
-          <p><strong>Total Records:</strong> {total}</p>
-          <p><strong>Earliest Record Time (UTC+8):</strong> {format_time(earliest_time)}</p>
-          <p><strong>Latest Record Time (UTC+8):</strong> {format_time(latest_time)}</p>
-        </body>
-        </html>
+        # 删除策略：只保留最近100条或7天内的数据
+        cleanup_sql = """
+        DELETE FROM DB2_KEEPALIVE
+        WHERE ID NOT IN (
+            SELECT ID FROM DB2_KEEPALIVE
+            ORDER BY RECORD_TIME DESC
+            FETCH FIRST 100 ROWS ONLY
+        )
+        OR RECORD_TIME < ?
         """
+        seven_days_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d-%H.%M.%S.%f")
+        stmt = ibm_db.prepare(conn, cleanup_sql)
+        ibm_db.bind_param(stmt, 1, seven_days_ago)
+        ibm_db.execute(stmt)
+
+        # 插入保活记录
+        now = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
+        insert_sql = "INSERT INTO DB2_KEEPALIVE (RECORD_TIME, STATUS) VALUES (?, ?)"
+        stmt = ibm_db.prepare(conn, insert_sql)
+        ibm_db.bind_param(stmt, 1, now)
+        ibm_db.bind_param(stmt, 2, "OK")
+        ibm_db.execute(stmt)
+
+        return jsonify({"message": "Keep-alive signal recorded", "time": now}), 200
+
     except Exception as e:
-        return f"Error: {str(e)}", 500
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'conn' in locals():
+            ibm_db.close(conn)
