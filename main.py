@@ -44,24 +44,24 @@ def db2_keep_alive(request):
         return jsonify({"error": "Database connection failed", "details": str(e)}), 500
 
     try:
-        # --- 清理策略：只保留最近100条记录 ---
-        # 注意：为了简化，这里移除了按日期清理的逻辑，只保留按数量清理。
-        # 如果需要，可以重新加入日期清理逻辑。
+        # --- 清理策略：优化SQL写法，确保只保留100条 ---
         cleanup_sql = """
-        DELETE FROM DB2_KEEPALIVE
-        WHERE ID NOT IN (
-            SELECT ID FROM (
-                SELECT ID FROM DB2_KEEPALIVE
+        DELETE FROM ZZG36949.CHRONOS_RECORDS
+        WHERE RECORD_TIME < (
+            SELECT MIN(RECORD_TIME)
+            FROM (
+                SELECT RECORD_TIME
+                FROM ZZG36949.CHRONOS_RECORDS
                 ORDER BY RECORD_TIME DESC
                 FETCH FIRST 100 ROWS ONLY
             ) AS T
         )
         """
         stmt_cleanup = ibm_db.exec_immediate(conn, cleanup_sql)
-        
+
         # --- 插入新的保活记录 ---
         now_utc = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
-        insert_sql = "INSERT INTO DB2_KEEPALIVE (RECORD_TIME, STATUS) VALUES (?, ?)"
+        insert_sql = "INSERT INTO ZZG36949.CHRONOS_RECORDS (RECORD_TIME, STATUS) VALUES (?, ?)"
         stmt_insert = ibm_db.prepare(conn, insert_sql)
         ibm_db.bind_param(stmt_insert, 1, now_utc)
         ibm_db.bind_param(stmt_insert, 2, "OK")
@@ -70,7 +70,7 @@ def db2_keep_alive(request):
         # 关闭连接
         ibm_db.close(conn)
 
-        return jsonify({"message": "Keep-alive signal recorded successfully", "time_utc": now_utc}), 200
+        return jsonify({"message": "Keep-alive signal recorded, cleanup logic improved.", "time_utc": now_utc}), 200
 
     except Exception as e:
         # 如果在执行SQL时出错，也要确保关闭连接
