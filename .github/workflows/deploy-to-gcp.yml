@@ -36,5 +36,5 @@ jobs:
             --source=. \
             --entry-point=db2_keep_alive \
             --trigger-http \
-            --no-allow-unauthenticated \ # <--- 修改在这里
+            --no-allow-unauthenticated \
             --set-env-vars="DB2_PASSWORD=${{ secrets.DB2_PASSWORD }},GCP_REGION=us-central1,ENV_MODE=practice,GIT_COMMIT_SHA=${{ github.sha }}"
