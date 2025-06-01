@@ -36,6 +36,7 @@ def db2_keep_alive(request):
     duration_ms_val = 0
     error_message_val = None
     record_count_val = 0
+    note_val = "No additional info"  # 默认备注
 
     # 系统环境信息
     hostname_val = socket.gethostname()
@@ -51,7 +52,6 @@ def db2_keep_alive(request):
     user_agent_val = request.headers.get('User-Agent', '')[:499]
     request_id_val = str(uuid.uuid4())
     trigger_source_val = request.args.get('trigger_source', 'HTTP_DIRECT')[:31]
-    note_val = ""  # 初始化后面自动填充
 
     conn = None
     try:
