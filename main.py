@@ -47,6 +47,7 @@ def index():
         latest = rows[0]['RECORD_TIME'] if total else None
         earliest = rows[-1]['RECORD_TIME'] if total else None
 
+        # 构建 HTML 页面
         html = "<html><head><title>DB2 Keep Alive</title></head><body style='font-family:sans-serif'>"
         html += "<h2>DB2 Keep Alive Status</h2>"
 
@@ -73,6 +74,7 @@ def ping():
     try:
         conn = ibm_db.connect(conn_str, "", "")
 
+        # 删除策略：只保留最近100条或7天内的数据
         cleanup_sql = """
         DELETE FROM DB2_KEEPALIVE
         WHERE ID NOT IN (
@@ -87,6 +89,7 @@ def ping():
         ibm_db.bind_param(stmt, 1, seven_days_ago)
         ibm_db.execute(stmt)
 
+        # 插入保活记录
         now = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
         insert_sql = "INSERT INTO DB2_KEEPALIVE (RECORD_TIME, STATUS) VALUES (?, ?)"
         stmt = ibm_db.prepare(conn, insert_sql)
@@ -102,3 +105,18 @@ def ping():
         if 'conn' in locals():
             ibm_db.close(conn)
 
+@app.route("/debug")
+def debug():
+    return jsonify({
+        "PORT": os.getenv("PORT"),
+        "DB2_PASSWORD_SET": bool(os.getenv("DB2_PASSWORD")),
+        "IBM_DB_HOME": os.getenv("IBM_DB_HOME"),
+        "LD_LIBRARY_PATH": os.getenv("LD_LIBRARY_PATH"),
+        "CurrentTimeUTC": datetime.utcnow().isoformat()
+    })
+
+# 本地调试时使用，仅 Cloud Run 部署时不执行
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting development server on port {port}...")
+    app.run(host="0.0.0.0", port=port)
