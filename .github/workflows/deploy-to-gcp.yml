@@ -1,4 +1,4 @@
-name: Deploy to Cloud Run
+name: Deploy to Google Cloud Run
 
 on:
   push:
@@ -14,20 +14,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Auth to GCP
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/817261716888/locations/global/workloadIdentityPools/github-pool/providers/github-provider2'
           service_account: '817261716888-compute@developer.gserviceaccount.com'
-          export_environment_variables: true
           create_credentials_file: true
+          export_environment_variables: true
 
-      - name: Setup gcloud
+      - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v1
+        with:
+          version: latest
 
       - name: Deploy to Cloud Run
         run: |
-          gcloud run deploy db2-keep-alive             --source=.             --entry-point=app             --runtime=python311             --region=us-central1             --allow-unauthenticated             --project=sigma-outcome             --port=8080             --memory=256Mi
+          gcloud run deploy db2-keep-alive \
+            --source=. \
+            --region=us-central1 \
+            --project=sigma-outcome \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=256Mi
