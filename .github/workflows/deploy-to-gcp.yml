@@ -32,7 +32,7 @@ jobs:
 
       - name: Deploy Cloud Function (2nd Gen)
         run: |
-          gcloud functions deploy db2KeepAlive \
+          gcloud functions deploy db2-keep-alive \
             --gen2 \
             --entry-point=db2_keep_alive \
             --runtime=python311 \
