@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import ibm_db
 from google.cloud import secretmanager
+import functions_framework
 
 app = Flask(__name__)
 
@@ -22,8 +23,9 @@ try:
 except Exception as e:
     print(f"CRITICAL: Failed to initialize SecretManagerServiceClient: {e}")
 
-@app.route("/", methods=["GET", "POST"])
-def db2_keep_alive():
+# ✅ GCF v2 entry point
+@functions_framework.http
+def db2_keep_alive(request):
     conn = None
     log_messages = ["Function triggered."]
     
@@ -87,8 +89,3 @@ def db2_keep_alive():
                 print("Db2 connection closed.")
             except Exception as e_close:
                 print(f"Error closing Db2 connection: {e_close}")
-
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)

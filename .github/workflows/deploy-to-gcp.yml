@@ -34,7 +34,7 @@ jobs:
         run: |
           gcloud functions deploy db2KeepAlive \
             --gen2 \
-            --entry-point=app \
+            --entry-point=db2_keep_alive \
             --runtime=python311 \
             --trigger-http \
             --allow-unauthenticated \
