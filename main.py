@@ -36,7 +36,6 @@ def db2_keep_alive(request):
     duration_ms_val = 0
     error_message_val = None
     record_count_val = 0
-    note_val = "No additional info"  # 默认备注
 
     # 系统环境信息
     hostname_val = socket.gethostname()
@@ -52,11 +51,30 @@ def db2_keep_alive(request):
     user_agent_val = request.headers.get('User-Agent', '')[:499]
     request_id_val = str(uuid.uuid4())
     trigger_source_val = request.args.get('trigger_source', 'HTTP_DIRECT')[:31]
+    note_val = ""  # 初始化后面自动填充
 
     conn = None
     try:
         # 建立数据库连接
         conn = ibm_db.connect(conn_str, "", "")
+
+        # 获取符合条件的记录数
+        count_sql = """
+        SELECT COUNT(*) FROM ZZG36949.CHRONOS_RECORDS
+        WHERE RECORD_TIME < (
+            SELECT MIN(RECORD_TIME)
+            FROM (
+                SELECT RECORD_TIME
+                FROM ZZG36949.CHRONOS_RECORDS
+                ORDER BY RECORD_TIME DESC
+                FETCH FIRST 100 ROWS ONLY
+            ) AS T_TOP_100
+        )
+        """
+        stmt_count = ibm_db.prepare(conn, count_sql)
+        ibm_db.execute(stmt_count)
+        count_result = ibm_db.fetch_assoc(stmt_count)
+        record_count_val = count_result['1'] if count_result else 0
 
         # 执行清理操作
         cleanup_sql = """
@@ -73,11 +91,8 @@ def db2_keep_alive(request):
         """
         stmt_cleanup = ibm_db.prepare(conn, cleanup_sql)
         ibm_db.execute(stmt_cleanup)
-        record_count_val = ibm_db.row_count(stmt_cleanup)  # ✅ 正确函数
-        if record_count_val == -1:
-            record_count_val = 0
 
-        note_val = f"保活成功，清理{record_count_val}条记录"
+        note_val = f"保活成功，清理了 {record_count_val} 条记录"
 
     except Exception as e:
         status_val = "FAIL"
