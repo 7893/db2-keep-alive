@@ -1,4 +1,4 @@
-name: Deploy to GCP Cloud Functions
+name: Deploy to Google Cloud Functions 2nd Gen
 
 on:
   push:
@@ -6,32 +6,37 @@ on:
       - main
 
 permissions:
-  contents: 'read'
-  id-token: 'write'
+  contents: read
+  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        workload_identity_provider: projects/817261716888/locations/global/workloadIdentityPools/github-pool/providers/github-provider2
-        service_account: 817261716888-compute@developer.gserviceaccount.com
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/817261716888/locations/global/workloadIdentityPools/github-pool/providers/github-provider2'
+          service_account: '817261716888-compute@developer.gserviceaccount.com'
+          create_credentials_file: true
+          export_environment_variables: true
 
-    - name: Setup gcloud CLI
-      uses: google-github-actions/setup-gcloud@v1
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          version: latest
 
-    - name: Deploy to Cloud Functions
-      run: |
-        gcloud functions deploy db2KeepAlive \
-          --entry-point=db2_keep_alive \
-          --runtime=python311 \
-          --trigger-http \
-          --allow-unauthenticated \
-          --project=sigma-outcome \
-          --region=us-central1
+      - name: Deploy Cloud Function (2nd Gen)
+        run: |
+          gcloud functions deploy db2KeepAlive \
+            --gen2 \
+            --entry-point=app \
+            --runtime=python311 \
+            --trigger-http \
+            --allow-unauthenticated \
+            --project=sigma-outcome \
+            --region=us-central1
