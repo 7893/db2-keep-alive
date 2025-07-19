@@ -1,166 +1,175 @@
-# db2_keep_alive.py
-
 import os
 import ibm_db
-import ibm_db_dbi
-from datetime import datetime, timedelta # timedelta for time calculations
-import functions_framework
-from flask import jsonify
-import time
-import uuid
-import socket
-import traceback
+from datetime import datetime, timedelta
+from flask import escape
 
-# --- Database Configuration ---
-DB_DATABASE = "bludb"
-DB_HOSTNAME = "6667d8e9-9d4d-4ccb-ba32-21da3bb5aafc.c1ogj3sd0tgtu0lqde00.databases.appdomain.cloud"
-DB_PORT = "30376"
-DB_PROTOCOL = "TCPIP"
-DB_UID = "zzg36949"
-DB_PWD = os.getenv("DB2_PASSWORD")
-DB_SECURITY = "SSL"
+# --- HTML 模板 ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DB2 Keep-Alive Status</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background-color: #f0f2f5; padding: 20px; box-sizing: border-box; }}
+        .container {{ text-align: center; background-color: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 600px; width: 100%; }}
+        .status {{ font-size: 24px; font-weight: bold; padding: 10px 20px; border-radius: 50px; color: white; display: inline-block; margin-bottom: 20px; }}
+        .ok {{ background-color: #28a745; }}
+        .error {{ background-color: #dc3545; }}
+        .info {{ margin-top: 20px; font-size: 16px; color: #333; }}
+        .info p {{ margin: 8px 0; }}
+        .info strong {{ color: #000; }}
+        .details {{ font-size: 14px; color: #666; margin-top: 15px; }}
+        .footer {{ margin-top: 30px; font-size: 12px; color: #888; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DB2 Keep-Alive Status</h1>
+        <p class="status {status_class}">{status_message}</p>
+        <div class="info">
+            <p><strong>最新心跳时间:</strong> {last_heartbeat}</p>
+            <p><strong>数据库记录总数:</strong> {total_records}</p>
+        </div>
+        <div class="details">
+            <p>{cleanup_message}</p>
+        </div>
+        <div class="footer">
+            <p>页面自动刷新于: {current_time} (UTC)</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
-conn_str = (
-    f"DATABASE={DB_DATABASE};"
-    f"HOSTNAME={DB_HOSTNAME};"
-    f"PORT={DB_PORT};"
-    f"PROTOCOL={DB_PROTOCOL};"
-    f"UID={DB_UID};"
-    f"PWD={DB_PWD};"
-    f"SECURITY={DB_SECURITY};"
-)
-
-@functions_framework.http
-def db2_keep_alive(request):
-    start_time = time.perf_counter()
-
-    # Initialize log fields
-    record_time_val = datetime.utcnow().strftime("%Y-%m-%d-%H.%M.%S.%f")
-    status_val = "OK"
-    duration_ms_val = 0
-    error_message_val = None
-    record_count_val = 0 
-    note_val = ""
-
-    # System environment info
-    hostname_val = socket.gethostname()
-    ip_address_val = request.headers.get('X-Forwarded-For', request.remote_addr)
-    region_val = os.getenv("GCP_REGION", "unknown")
-    env_mode_val = os.getenv("ENV_MODE", "practice")
-    git_commit_val = os.getenv("GIT_COMMIT_SHA", "unknown")[:40]
-
-    # Request context info
-    request_method_val = request.method
-    request_path_val = request.path[:999]
-    accept_language_val = request.headers.get('Accept-Language', '')[:254]
-    user_agent_val = request.headers.get('User-Agent', '')[:499]
-    request_id_val = str(uuid.uuid4())
-    trigger_source_val = request.args.get('trigger_source', 'HTTP_DIRECT')[:31]
-    
-    conn = None
-    cursor = None
-
+def get_db_connection():
+    """建立并返回数据库连接"""
     try:
-        conn = ibm_db_dbi.connect(conn_str)
-        cursor = conn.cursor()
+        conn_str = os.getenv('DB2_CONNECTION_STRING')
+        if not conn_str:
+            raise ValueError("DB2_CONNECTION_STRING 环境变量未设置")
+        return ibm_db.connect(conn_str, "", "")
+    except Exception as e:
+        print(f"数据库连接失败: {e}")
+        return None
 
-        # New Cleanup Logic: Keep top 262144 OR records from the last 6 months
-        cleanup_sql = """
-        DELETE FROM ZZG36949.CHRONOS_RECORDS
-        WHERE ID NOT IN (
-            SELECT ID FROM ( -- Sub-select to handle UNION for NOT IN
+def perform_cleanup(conn):
+    """执行旧记录清理"""
+    try:
+        # 计算6个月前的时间点
+        six_months_ago = datetime.utcnow() - timedelta(days=180)
+        cutoff_time = six_months_ago.strftime('%Y-%m-%d-%H.%M.%S.%f')
+        
+        # 保留的最新记录数量
+        retention_count = 262144
+
+        # 找出需要删除的记录ID
+        # 条件: 时间早于6个月前 且 不在最新的262144条记录中
+        sql_find_to_delete = f"""
+            SELECT ID FROM ZZG36949.CHRONOS_RECORDS
+            WHERE RECORD_TIME < '{cutoff_time}'
+            AND ID NOT IN (
                 SELECT ID FROM ZZG36949.CHRONOS_RECORDS
                 ORDER BY RECORD_TIME DESC
-                FETCH FIRST 262144 ROWS ONLY -- Changed to 262144
+                FETCH FIRST {retention_count} ROWS ONLY
             )
-            UNION
-            SELECT ID FROM ZZG36949.CHRONOS_RECORDS
-            WHERE RECORD_TIME >= (CURRENT TIMESTAMP - 6 MONTHS) -- Changed to 6 MONTHS
-        )
+            FETCH FIRST 1000 ROWS ONLY
         """
-        cursor.execute(cleanup_sql)
-        record_count_val = cursor.rowcount if cursor.rowcount != -1 else 0 
-        conn.commit() 
-        note_val = f"Keep-alive successful, new cleanup (top 262144 or last 6 months) applied, {record_count_val} old records cleaned."
+        
+        stmt_find = ibm_db.exec_immediate(conn, sql_find_to_delete)
+        ids_to_delete = []
+        while True:
+            row = ibm_db.fetch_tuple(stmt_find)
+            if not row:
+                break
+            ids_to_delete.append(str(row[0]))
+
+        if not ids_to_delete:
+            return "无需清理旧记录。"
+
+        # 执行删除
+        id_list = ",".join(ids_to_delete)
+        sql_delete = f"DELETE FROM ZZG36949.CHRONOS_RECORDS WHERE ID IN ({id_list})"
+        stmt_delete = ibm_db.exec_immediate(conn, sql_delete)
+        
+        deleted_count = len(ids_to_delete)
+        print(f"成功删除 {deleted_count} 条旧记录。")
+        return f"成功删除 {deleted_count} 条旧记录。"
 
     except Exception as e:
-        status_val = "FAIL"
-        error_message_val = str(e)[:1999]
-        note_val = f"Database operation failed: {error_message_val}"
-        print(f"[ERROR] Database operation error: {status_val} - {error_message_val}")
-        print(traceback.format_exc())
-        if conn: 
-            try:
-                conn.rollback()
-            except Exception as rb_err:
-                print(f"[ERROR] Rollback failed: {rb_err}")
+        print(f"清理记录时出错: {e}")
+        return f"清理记录时出错: {e}"
 
-    finally:
-        end_time = time.perf_counter()
-        duration_ms_val = int((end_time - start_time) * 1000)
 
-        request_note = request.args.get('note', '')[:999]
-        if request_note and status_val == "OK": 
-            note_val = request_note
-        elif not note_val and status_val == "OK": 
-             note_val = "Log entry with new cleanup strategy (top 262144 or last 6 months)." # Updated note
-        elif not note_val: 
-             note_val = "Log entry."
+def db2_keep_alive(request):
+    """
+    云函数主入口。
+    1. 清理旧记录。
+    2. 插入新心跳。
+    3. 查询状态并返回HTML页面。
+    """
+    conn = get_db_connection()
+    if not conn:
+        return HTML_TEMPLATE.format(
+            status_class="error",
+            status_message="数据库连接失败",
+            last_heartbeat="N/A",
+            total_records="N/A",
+            cleanup_message="数据库连接失败，无法执行清理。",
+            current_time=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        ), 500
 
-        if cursor and conn: 
-            try:
-                log_insert_sql = """INSERT INTO ZZG36949.CHRONOS_RECORDS (
-                                    RECORD_TIME, STATUS, DURATION_MS, ERROR_MESSAGE, RECORD_COUNT,
-                                    HOSTNAME, IP_ADDRESS, REGION, ENV_MODE, GIT_COMMIT,
-                                    REQUEST_METHOD, REQUEST_PATH, ACCEPT_LANGUAGE, USER_AGENT,
-                                    REQUEST_ID, TRIGGER_SOURCE, NOTE
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    # 1. 执行清理机制
+    cleanup_msg = perform_cleanup(conn)
 
-                params = [
-                    record_time_val, status_val, duration_ms_val, error_message_val, record_count_val,
-                    hostname_val, ip_address_val, region_val, env_mode_val, git_commit_val,
-                    request_method_val, request_path_val, accept_language_val, user_agent_val,
-                    request_id_val, trigger_source_val, note_val
-                ]
-                cursor.execute(log_insert_sql, params)
-                conn.commit() 
+    # 2. 插入新心跳记录
+    status = "OK"
+    error_message = ""
+    try:
+        utc_now = datetime.utcnow()
+        query_insert = "INSERT INTO ZZG36949.CHRONOS_RECORDS (RECORD_TIME, STATUS, ERROR_MESSAGE, TRIGGER_TYPE, RUNTIME_VERSION, MEMORY_ALLOCATED_MB) VALUES (?, ?, ?, ?, ?, ?)"
+        stmt_insert = ibm_db.prepare(conn, query_insert)
+        params = (
+            utc_now.strftime('%Y-%m-%d-%H.%M.%S.%f'),
+            status,
+            error_message,
+            os.getenv('TRIGGER_TYPE', 'HTTP'),
+            os.getenv('K_SERVICE', 'Unknown'),
+            os.getenv('MEMORY_ALLOCATED_MB', 128)
+        )
+        ibm_db.execute(stmt_insert, params)
+    except Exception as e:
+        print(f"插入记录时出错: {e}")
+        status = "ERROR"
+        error_message = str(e)
 
-            except Exception as log_error:
-                print(f"[CRITICAL] Failed to insert log record: {log_error}")
-                print(traceback.format_exc())
-                if status_val == "OK":
-                    status_val = "LOG_FAIL"
-                    if not error_message_val:
-                        error_message_val = str(log_error)[:1999]
-                    note_val = "Main operation OK, but logging to DB failed."
-            finally:
-                if cursor:
-                    cursor.close()
-                if conn:
-                    conn.close()
-        elif conn: 
-             conn.close()
-        else:
-            if not error_message_val: 
-                status_val = "FAIL" 
-                error_message_val = "No database connection available for primary operation or logging."
-            if not note_val:
-                note_val = "DB connection failed, unable to write log."
-            print(f"[WARNING] Invocation logged to Cloud Logging (no DB connection): "
-                  f"Status={status_val}, Error='{error_message_val}', Duration={duration_ms_val}ms, "
-                  f"ReqID={request_id_val}, Note='{note_val}'")
 
-    response_payload = {
-        "status": status_val,
-        "requestId": request_id_val,
-        "recordTime": record_time_val,
-        "durationMs": duration_ms_val,
-        "cleanedRecordsImpact": record_count_val,
-        "note": note_val
-    }
-    if error_message_val:
-        response_payload["errorMessage"] = error_message_val
-    else:
-        response_payload["message"] = "Keep-alive processed successfully with new cleanup strategy."
+    # 3. 查询最新状态
+    last_heartbeat_val = "查询失败"
+    total_records_val = "查询失败"
+    try:
+        query_status = "SELECT MAX(RECORD_TIME), COUNT(*) FROM ZZG36949.CHRONOS_RECORDS"
+        stmt_status = ibm_db.exec_immediate(conn, query_status)
+        result = ibm_db.fetch_tuple(stmt_status)
+        if result:
+            last_heartbeat_val = result[0] if result[0] else "无记录"
+            total_records_val = result[1] if result[1] else 0
+    except Exception as e:
+        print(f"查询状态时出错: {e}")
 
-    return jsonify(response_payload), 200 if status_val in ("OK", "LOG_FAIL") else 500
+    # 关闭数据库连接
+    ibm_db.close(conn)
+
+    # 4. 返回最终的HTML页面
+    page_status_class = "ok" if status == "OK" else "error"
+    page_status_message = "运行正常" if status == "OK" else f"插入记录时出错: {error_message}"
+
+    return HTML_TEMPLATE.format(
+        status_class=page_status_class,
+        status_message=page_status_message,
+        last_heartbeat=escape(str(last_heartbeat_val)),
+        total_records=escape(str(total_records_val)),
+        cleanup_message=escape(cleanup_msg),
+        current_time=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    )
